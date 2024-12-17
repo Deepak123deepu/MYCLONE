@@ -1,0 +1,66 @@
+def createDagDefinition(metadataDict, dagId, dagProperties, outputFile, template, projectDetails, version, description, tags, custom_tag, custom_tags):
+    print("Creating dag definition...")
+
+    # Loop through metadataDict to fill dagProperties
+    for key in metadataDict.keys():
+        if key not in [
+            'name', 'steps', 'type', 'default_args', 'project_space', 'timezone', 'trigger_success_mail', 
+            'trigger_failure_mail', 'type_of_email', 'recipient_email', 'tags', 'description', 'custom_tag', 
+            'custom_tags', 'no_run_config', 'run_config'
+        ]:
+            dagProperties[key] = metadataDict[key]
+
+    # Handling the start date logic
+    timezone_str = metadataDict.get('timezone', 'UTC')
+    tz = ZoneInfo(timezone_str)
+    
+    if "start_date" in dagProperties:
+        start_date_str = dagProperties["start_date"]
+        start_date_str_template = "datetime.now())-timedelta(days=(\d+))"
+        
+        match = re.search(start_date_str_template, start_date_str.replace(" ", ""))
+        if match is not None:
+            previous_date = datetime.now(tz) - timedelta(days=int(match.group(1)))
+            dagProperties["start_date"] = f"datetime({previous_date.year}, {previous_date.month}, {previous_date.day}, {previous_date.hour}, {previous_date.minute}, tzinfo=tz)"
+        elif start_date_str.startswith("datetime(") and start_date_str.endswith(")"):
+            date_parts = start_date_str[9:-1].split(",")
+            date_parts = [int(part.strip()) for part in date_parts]
+            
+            if len(date_parts) == 3:
+                year, month, day = date_parts
+                hour, minute = 0, 0
+            elif len(date_parts) == 5:
+                year, month, day, hour, minute = date_parts
+            
+            start_date_dt = datetime(year, month, day, hour, minute, tzinfo=tz)
+            dagProperties["start_date"] = f"datetime({start_date_dt.year}, {start_date_dt.month}, {start_date_dt.day}, {start_date_dt.hour}, {start_date_dt.minute}, tzinfo=tz)"
+        else:
+            previous_date = datetime.now(tz) - timedelta(days=1)
+            dagProperties["start_date"] = f"datetime({previous_date.year}, {previous_date.month}, {previous_date.day}, {previous_date.hour}, {previous_date.minute}, tzinfo=tz)"
+
+    # Check if the 'Runtime' key exists and is not empty in dagProperties, set the default if not present
+    runtime_value = dagProperties.get('Runtime', '23:55')  # Default value as '23:55' if not found
+    dagProperties['timetable'] = f"NextRun_Plugin(runtime=\"{runtime_value}\")"
+
+    # Render the Jinja template for the DAG
+    content = template.render(
+        label="dagDefinition",
+        defaultArgs=createDefaultArgs.defaultArgs,  # Assuming you have createDefaultArgs somewhere
+        dagProperties=dagProperties,
+        dagId=dagId,
+        projectTag=projectDetails[0],
+        version=version,
+        description=description,
+        tags=tags,
+        custom_tag=custom_tag,
+        custom_tags=custom_tags
+    )
+
+    # Write the rendered content to the output file
+    with open(outputFile, mode="a", encoding="utf-8") as message:
+        message.write(content)
+
+    print(f"---INFO--- Dag Definition written to {outputFile}")
+
+
+can try to pass runtime value from this function
