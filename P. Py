@@ -1,0 +1,145 @@
+import apache_beam as beam
+from apache_beam.options.pipeline_options import PipelineOptions, GoogleCloudOptions, StandardOptions
+import json
+import psycopg2
+
+# Configuration
+DB_CONFIG = {
+    "username": "postgres",
+    "password": "Postgres@123",
+    "database": "postgres",
+    "host": "34.57.198.207",
+    "port": "5432",
+    "query": "SELECT * FROM employee",
+}
+
+PUBSUB_TOPIC = "projects/your-project-id/topics/employee-data"
+GCS_BUCKET = "your-gcs-bucket"
+GCS_DIRECTORY = "employee_data"
+GCS_FILE_NAME = "employee_data.json"
+
+def fetch_data_from_db():
+    """Fetch data from PostgreSQL."""
+    connection = psycopg2.connect(
+        dbname=DB_CONFIG["database"],
+        user=DB_CONFIG["username"],
+        password=DB_CONFIG["password"],
+        host=DB_CONFIG["host"],
+        port=DB_CONFIG["port"],
+    )
+    cursor = connection.cursor()
+    cursor.execute(DB_CONFIG["query"])
+    rows = cursor.fetchall()
+    column_names = [desc[0] for desc in cursor.description]
+    connection.close()
+    return [dict(zip(column_names, row)) for row in rows]
+
+def calculate_size(rows):
+    """Calculate size of data in MB."""
+    return sum(len(json.dumps(row).encode("utf-8")) for row in rows) / (1024 * 1024)
+
+class PublishToPubSub(beam.DoFn):
+    """Publish data to Pub/Sub topic."""
+    def __init__(self, topic):
+        self.topic = topic
+
+    def setup(self):
+        from google.cloud import pubsub_v1
+        self.publisher = pubsub_v1.PublisherClient()
+
+    def process(self, element):
+        self.publisher.publish(self.topic, json.dumps(element).encode("utf-8"))
+        yield element
+
+def run_pipeline_1():
+    """Pipeline 1: Read DB, check size, and route data."""
+    rows = fetch_data_from_db()
+    total_size_mb = calculate_size(rows)
+    print(f"Total data size: {total_size_mb:.2f} MB")
+
+    with beam.Pipeline(options=PipelineOptions()) as pipeline:
+        rows_pcollection = pipeline | "Create Rows" >> beam.Create(rows)
+
+        if total_size_mb >= 10:
+            gcs_path = f"gs://{GCS_BUCKET}/{GCS_DIRECTORY}/{GCS_FILE_NAME}"
+            _ = (
+                rows_pcollection
+                | "Write to GCS" >> beam.io.WriteToText(gcs_path, shard_name_template="", file_name_suffix=".json")
+            )
+        else:
+            _ = rows_pcollection | "Publish to Pub/Sub" >> beam.ParDo(PublishToPubSub(PUBSUB_TOPIC))
+
+if __name__ == "__main__":
+    run_pipeline_1() 
+
+
+
+
+class TransformData(beam.DoFn):
+    """Perform transformations on the data."""
+    def process(self, element):
+        element['annual_salary'] = element['monthly_salary'] * 12
+        return [element]
+
+class WriteToPostgres(beam.DoFn):
+    """Write transformed data to PostgreSQL."""
+    def setup(self):
+        import psycopg2
+        self.connection = psycopg2.connect(
+            dbname=DB_CONFIG["database"],
+            user=DB_CONFIG["username"],
+            password=DB_CONFIG["password"],
+            host=DB_CONFIG["host"],
+            port=DB_CONFIG["port"],
+        )
+        self.cursor = self.connection.cursor()
+
+    def process(self, element):
+        self.cursor.execute(
+            """
+            INSERT INTO employee_target (emp_id, first_name, last_name, email, hire_date, monthly_salary, department, annual_salary)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            """,
+            (
+                element['emp_id'], element['first_name'], element['last_name'], element['email'],
+                element['hire_date'], element['monthly_salary'], element['department'], element['annual_salary']
+            )
+        )
+        self.connection.commit()
+        yield element
+
+    def teardown(self):
+        self.cursor.close()
+        self.connection.close()
+
+def run_pipeline_2(source_type):
+    """Pipeline 2: Read, transform, and write."""
+    gcs_path = f"gs://{GCS_BUCKET}/{GCS_DIRECTORY}/{GCS_FILE_NAME}"
+
+    with beam.Pipeline(options=PipelineOptions()) as pipeline:
+        if source_type == "pubsub":
+            source = (
+                pipeline
+                | "Read from Pub/Sub" >> beam.io.ReadFromPubSub(topic=PUBSUB_TOPIC)
+                | "Parse Pub/Sub JSON" >> beam.Map(json.loads)
+            )
+        elif source_type == "gcs":
+            source = (
+                pipeline
+                | "Read from GCS" >> beam.io.ReadFromText(gcs_path)
+                | "Parse GCS JSON" >> beam.Map(json.loads)
+            )
+
+        transformed_data = source | "Transform Data" >> beam.ParDo(TransformData())
+
+        _ = transformed_data | "Write to PostgreSQL" >> beam.ParDo(WriteToPostgres())
+
+        archive_path = f"gs://{GCS_BUCKET}/{GCS_DIRECTORY}/transformed_employee_data.json"
+        _ = (
+            transformed_data
+            | "Write Archive to GCS" >> beam.io.WriteToText(archive_path, shard_name_template="", file_name_suffix=".json")
+        )
+
+if __name__ == "__main__":
+    import sys
+    run_pipeline_2(sys.argv[1])  # Pass "pubsub" or "gcs" as argument
