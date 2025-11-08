@@ -80,6 +80,8 @@ Make sure the tone is professional yet impactful — suitable for LinkedIn or a 
 
 Focus on showcasing my key strengths, years of experience, technical expertise, and major achievements.
 
+focus on cte2 version of mbp caperas, which is hosted in azure cloud. also i forgot to add few projects which i did in resume and some of them are, airflow variables automation (which will automatically update the variables based on airflow metadats tables, written in python), email notification of dag completion/failed/success (written in shell script). monitoring and email notification scripts  for kafaks services if goes down(written in shell script).
+
 Avoid generic buzzwords and keep it ATS-friendly (Applicant Tracking System).
 
 Finally, recommend a refined version that would stand out most for tech/product/data roles.
